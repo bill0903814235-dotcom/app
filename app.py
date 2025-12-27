@@ -7,7 +7,19 @@ import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Dropout, LayerNormalization, MultiHeadAttention, GlobalAveragePooling1D, Conv1D
+import random
+import os
 
+# ==========================================
+# 0. 固定隨機性 (新增這裡)
+# ==========================================
+def set_seeds(seed=42):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+set_seeds(42) # 設定種子為 42 (或任何你喜歡的整數)
 # ==========================================
 # 1. 核心邏輯區 (資料與模型)
 # ==========================================
@@ -218,3 +230,4 @@ if st.button("🚀 執行雙重預測"):
                 "預測股價": [f"{p:.2f}" for p in future_prices]
             })
             st.table(res_df)
+
