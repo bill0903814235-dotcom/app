@@ -26,27 +26,56 @@ set_seeds(42) # 設定種子為 42 (或任何你喜歡的整數)
 
 @st.cache_data(ttl=3600)
 def get_data_with_macro(stock_code):
-    ticker = f"{stock_code}.TW"
-    try:
-        df = yf.download(ticker, period="5y", progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df[['Close', 'Volume']].rename(columns={'Close': 'Close', 'Volume': 'Volume'})
-        
-        # 宏觀數據
-        macro_tickers = {'^TWII': 'Market_Index', 'TWD=X': 'USD_TWD', '^VIX': 'VIX'}
-        for t, name in macro_tickers.items():
-            try:
-                macro_df = yf.download(t, period="5y", progress=False)
-                if isinstance(macro_df.columns, pd.MultiIndex):
-                    macro_df.columns = macro_df.columns.get_level_values(0)
-                df[name] = macro_df['Close']
-            except:
-                pass
-        
-        df.ffill(inplace=True)
-        df.dropna(inplace=True)
-        return df
+    # 1. 定義要嘗試的後綴清單 (先試上市 .TW，再試上櫃 .TWO)
+    suffixes = ['.TW', '.TWO']
+    
+    df = None
+    ticker_used = ""
+
+    # 2. 自動測試哪一個後綴是有效的
+    for suffix in suffixes:
+        ticker = f"{stock_code}{suffix}"
+        try:
+            # 嘗試下載資料
+            temp_df = yf.download(ticker, period="5y", progress=False)
+            
+            # 檢查是否真的有抓到資料 (判斷 index 是否為空)
+            if temp_df is not None and not temp_df.empty:
+                df = temp_df
+                ticker_used = ticker # 記住成功的代號
+                break # 成功了就跳出迴圈，不用再試下一個
+        except Exception:
+            continue # 失敗就試下一個後綴
+
+    # 3. 如果試遍了都沒資料，回報失敗
+    if df is None or df.empty:
+        st.error(f"❌ 找不到股票 {stock_code} 的資料。請確認代號是否正確。")
+        return None
+
+    # --- 以下處理資料格式 (維持原樣) ---
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    
+    df = df[['Close', 'Volume']].rename(columns={'Close': 'Close', 'Volume': 'Volume'})
+    
+    # 宏觀數據 (這裡用 try-except 包起來，避免因為網路問題卡住)
+    macro_tickers = {'^TWII': 'Market_Index', 'TWD=X': 'USD_TWD', '^VIX': 'VIX'}
+    for t, name in macro_tickers.items():
+        try:
+            macro_df = yf.download(t, period="5y", progress=False)
+            if isinstance(macro_df.columns, pd.MultiIndex):
+                macro_df.columns = macro_df.columns.get_level_values(0)
+            df[name] = macro_df['Close']
+        except:
+            pass # 宏觀資料抓不到就算了，不要讓主程式掛掉
+    
+    df.ffill(inplace=True)
+    df.dropna(inplace=True)
+    
+    # 顯示成功訊息 (除錯用，讓你知道它抓到了哪個)
+    # st.success(f"✅ 成功下載：{ticker_used}") 
+    
+    return df
     except Exception as e:
         return None
 
@@ -230,4 +259,5 @@ if st.button("🚀 執行雙重預測"):
                 "預測股價": [f"{p:.2f}" for p in future_prices]
             })
             st.table(res_df)
+
 
