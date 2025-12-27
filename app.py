@@ -11,7 +11,7 @@ import random
 import os
 
 # ==========================================
-# 0. 固定隨機性 (新增這裡)
+# 0. 固定隨機性 (結果可重現)
 # ==========================================
 def set_seeds(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -19,46 +19,47 @@ def set_seeds(seed=42):
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-set_seeds(42) # 設定種子為 42 (或任何你喜歡的整數)
+set_seeds(42) 
+
 # ==========================================
 # 1. 核心邏輯區 (資料與模型)
 # ==========================================
 
 @st.cache_data(ttl=3600)
 def get_data_with_macro(stock_code):
-    # 1. 定義要嘗試的後綴清單 (先試上市 .TW，再試上櫃 .TWO)
+    # === 關鍵修改：自動嘗試上市(.TW) 與 上櫃(.TWO) ===
     suffixes = ['.TW', '.TWO']
     
     df = None
     ticker_used = ""
 
-    # 2. 自動測試哪一個後綴是有效的
+    # 自動測試哪一個後綴有效
     for suffix in suffixes:
         ticker = f"{stock_code}{suffix}"
         try:
-            # 嘗試下載資料
+            # 嘗試下載
             temp_df = yf.download(ticker, period="5y", progress=False)
             
-            # 檢查是否真的有抓到資料 (判斷 index 是否為空)
+            # 檢查資料是否有效
             if temp_df is not None and not temp_df.empty:
                 df = temp_df
-                ticker_used = ticker # 記住成功的代號
-                break # 成功了就跳出迴圈，不用再試下一個
+                ticker_used = ticker
+                break # 成功抓到資料，跳出迴圈
         except Exception:
-            continue # 失敗就試下一個後綴
+            continue # 失敗則嘗試下一個後綴
 
-    # 3. 如果試遍了都沒資料，回報失敗
+    # 如果都試過了還是空的，回報錯誤
     if df is None or df.empty:
         st.error(f"❌ 找不到股票 {stock_code} 的資料。請確認代號是否正確。")
         return None
 
-    # --- 以下處理資料格式 (維持原樣) ---
+    # --- 資料格式整理 ---
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
     df = df[['Close', 'Volume']].rename(columns={'Close': 'Close', 'Volume': 'Volume'})
     
-    # 宏觀數據 (這裡用 try-except 包起來，避免因為網路問題卡住)
+    # 宏觀數據 (加入容錯機制)
     macro_tickers = {'^TWII': 'Market_Index', 'TWD=X': 'USD_TWD', '^VIX': 'VIX'}
     for t, name in macro_tickers.items():
         try:
@@ -67,17 +68,15 @@ def get_data_with_macro(stock_code):
                 macro_df.columns = macro_df.columns.get_level_values(0)
             df[name] = macro_df['Close']
         except:
-            pass # 宏觀資料抓不到就算了，不要讓主程式掛掉
+            pass # 抓不到宏觀數據也沒關係，繼續執行
     
     df.ffill(inplace=True)
     df.dropna(inplace=True)
     
-    # 顯示成功訊息 (除錯用，讓你知道它抓到了哪個)
-    # st.success(f"✅ 成功下載：{ticker_used}") 
+    # 除錯用：顯示最終抓到的代號 (例如 3211.TWO)
+    # st.write(f"系統自動識別為：{ticker_used}") 
     
     return df
-    except Exception as e:
-        return None
 
 def add_indicators(df):
     df['Log_Return'] = np.log(df['Close'] / df['Close'].shift(1))
@@ -112,7 +111,7 @@ def build_model(input_shape):
     model.compile(optimizer='adam', loss='mse')
     return model
 
-# 關鍵：遞迴預測函式 (可指定天數)
+# 遞迴預測邏輯
 def predict_recursive(model, data, scaler, window_size, future_days, last_price, feat_count):
     curr_input = data[-window_size:].copy()
     preds = []
@@ -147,20 +146,21 @@ st.markdown("此 App 同時提供 **「明日極速預測」** 與 **「未來5�
 
 with st.sidebar:
     st.header("⚙️ 設定")
-    stock_code = st.text_input("股票代號", value="2330")
-    epochs = st.slider("訓練強度 (Epochs)", 10, 60, 30)
-    st.info("點擊按鈕後請稍候，AI 正在現場訓練模型...")
+    stock_code = st.text_input("股票代號", value="3211") # 預設改為 3211 讓你測試
+    # 預設值改為 40 (進攻型參數)
+    epochs = st.slider("訓練強度 (Epochs)", 10, 60, 40)
+    st.info("💡 Epoch 40 對轉折較敏感，適合短線參考。")
 
 if st.button("🚀 執行雙重預測"):
     status = st.empty()
     bar = st.progress(0)
     
     # 1. 數據
-    status.text("正在下載與處理數據...")
+    status.text("正在自動搜尋股票資料 (上市/上櫃)...")
     df = get_data_with_macro(stock_code)
     
     if df is None or len(df) < 200:
-        st.error("數據不足或下載失敗")
+        pass # 錯誤訊息已在函數內顯示
     else:
         bar.progress(20)
         df = add_indicators(df)
@@ -200,14 +200,14 @@ if st.button("🚀 執行雙重預測"):
         
         last_price = df['Close'].iloc[-1]
         
-        # 預測未來 5 天 (包含了第 1 天)
+        # 預測未來 5 天
         future_prices = predict_recursive(model, scaled, scaler, ws, 5, last_price, len(cols))
         
         price_1day = future_prices[0]  # 第1天
         price_5day = future_prices[-1] # 第5天
         
         bar.progress(100)
-        status.success("計算完成！請切換下方分頁查看結果。")
+        status.success(f"計算完成！(使用數據代號: {stock_code})")
         
         # === 雙模式分頁顯示 ===
         tab1, tab2 = st.tabs(["🚀 明日預測 (1 Day)", "🌊 波段預測 (5 Days)"])
@@ -218,7 +218,6 @@ if st.button("🚀 執行雙重預測"):
             
             d1_diff = price_1day - last_price
             d1_pct = (d1_diff / last_price) * 100
-            d1_color = "green" if d1_diff > 0 else "red"
             
             col1, col2 = st.columns(2)
             col1.metric("目前股價", f"{last_price:.2f}")
@@ -259,5 +258,3 @@ if st.button("🚀 執行雙重預測"):
                 "預測股價": [f"{p:.2f}" for p in future_prices]
             })
             st.table(res_df)
-
-
